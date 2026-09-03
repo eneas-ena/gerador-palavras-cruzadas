@@ -362,7 +362,11 @@ async function gerar() {
     const txt = await r.text();
     if (!r.ok) {
       let detalhe = txt.slice(0, 300);
-      try { const o = JSON.parse(txt); if (o && o.erro) detalhe = o.erro; } catch (e) { }
+      try {
+        const o = JSON.parse(txt);
+        if (o && o.erro) detalhe = o.erro;
+        if (o && o.diagnostico) detalhe += ' — ' + JSON.stringify(o.diagnostico);
+      } catch (e) { }
       throw new Error(`${detalhe} (código ${r.status})`);
     }
     receberLote(txt, tam, tema);
