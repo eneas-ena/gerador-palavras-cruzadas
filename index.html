@@ -371,18 +371,51 @@ async function gerar() {
   } finally { bt.disabled = false; bt.textContent = 'Gerar lote'; }
 }
 
+let BRUTA = '';   // última resposta recebida, para diagnóstico
+
 function extrairJson(txt) {
-  let s = txt.trim();
-  try { const o = JSON.parse(s); if (o && o.texto) s = o.texto; else if (Array.isArray(o)) return o; } catch (e) { }
+  BRUTA = txt;
+  let s = (txt || '').trim();
+  let parada = null;
+  try {
+    const o = JSON.parse(s);
+    if (Array.isArray(o)) return o;
+    if (o && typeof o.texto === 'string') { s = o.texto.trim(); parada = o.parada; BRUTA = s; }
+  } catch (e) { }
   s = s.replace(/```json/gi, '').replace(/```/g, '').trim();
-  const i = s.indexOf('['), f = s.lastIndexOf(']');
-  if (i < 0 || f < 0) throw new Error('a resposta não trouxe um array JSON');
-  return JSON.parse(s.slice(i, f + 1));
+
+  const i = s.indexOf('[');
+  if (i < 0) {
+    throw new Error(s ? 'o modelo respondeu em texto corrido, não em JSON'
+      : 'o modelo devolveu resposta vazia');
+  }
+  const f = s.lastIndexOf(']');
+  if (f > i) {
+    try { return JSON.parse(s.slice(i, f + 1)); } catch (e) { }
+  }
+  // JSON cortado: recupera até o último verbete completo e fecha o array
+  const corte = s.lastIndexOf('}');
+  if (corte > i) {
+    try {
+      const lista = JSON.parse(s.slice(i, corte + 1) + ']');
+      if (lista.length) { extrairJson.truncado = true; return lista; }
+    } catch (e) { }
+  }
+  throw new Error(parada === 'max_tokens'
+    ? 'a resposta foi cortada por tamanho; peça menos palavras por lote'
+    : 'a resposta não trouxe um array JSON legível');
 }
 
 function receberLote(txt, tam, tema) {
   let itens;
-  try { itens = extrairJson(txt); } catch (e) { recado('Resposta ilegível: ' + e.message, 'erro'); return; }
+  extrairJson.truncado = false;
+  try { itens = extrairJson(txt); }
+  catch (e) {
+    const amostra = (BRUTA || '').replace(/\s+/g, ' ').slice(0, 260);
+    recado(`Resposta ilegível: ${e.message}.` +
+      (amostra ? `<br><br><span style="opacity:.7">O modelo respondeu:</span> <em>${amostra.replace(/</g, '&lt;')}…</em>` : ''), 'erro');
+    return;
+  }
   const jaExiste = new Set(BANCO.map(w => w.palavra));
   const noLote = new Set();
   LOTE = itens.map(x => {
@@ -398,7 +431,8 @@ function receberLote(txt, tam, tema) {
   });
   pintarLote();
   const bons = LOTE.filter(i => !i.erro).length;
-  recado(`Lote recebido: ${bons} de ${LOTE.length} passaram na conferência automática. Leia antes de salvar.`, 'ok');
+  recado(`Lote recebido: ${bons} de ${LOTE.length} passaram na conferência automática. Leia antes de salvar.` +
+    (extrairJson.truncado ? ' A resposta veio cortada pelo tamanho, então o lote saiu menor do que o pedido.' : ''), 'ok');
 }
 
 function reconferir() {
