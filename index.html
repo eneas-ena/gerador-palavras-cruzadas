@@ -55,6 +55,7 @@ tr.fora td{opacity:.4}
 .selo{font-size:13px;padding:1px 7px;border-radius:10px;white-space:nowrap}
 .selo.erro{background:rgba(217,112,95,.2);color:var(--erro)}
 .selo.ok{background:rgba(95,191,149,.16);color:var(--ok)}
+.selo.aviso{background:rgba(224,180,74,.16);color:var(--aviso)}
 .recado{padding:10px 14px;border-radius:6px;margin-bottom:14px;font-size:16px}
 .recado.erro{background:rgba(217,112,95,.15);border:1px solid rgba(217,112,95,.4)}
 .recado.ok{background:rgba(95,191,149,.13);border:1px solid rgba(95,191,149,.35)}
@@ -265,20 +266,30 @@ const repo = {
 
 // ================= validação =================
 const semAcento = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/Ç/g, 'C').replace(/ç/g, 'c');
+const normalizar = s => semAcento((s || '').toUpperCase()).replace(/[^A-Z]/g, '');
+
+// a definição não pode entregar a palavra: compara palavra a palavra, não por
+// pedaço solto, senão "preparar" derrubaria ARA
+function entregaAPalavra(def, p) {
+  const termos = semAcento(def.toUpperCase()).split(/[^A-Z]+/).filter(Boolean);
+  return termos.some(t => t === p || (p.length >= 4 && (t.startsWith(p) || (t.length >= 4 && p.startsWith(t)))));
+}
+
 function validar(item, tamAlvo, jaExiste, noLote) {
-  const p = (item.palavra || '').toUpperCase().trim();
-  if (!/^[A-Z]+$/.test(p)) return 'grade com caractere inválido';
-  if (tamAlvo && p.length !== tamAlvo) return `tem ${p.length} letras`;
-  if (p.length < 3) return 'curta demais';
-  if (semAcento((item.gabarito || p).toUpperCase()) !== p) return 'gabarito não bate com a grade';
+  const p = item.palavra;
+  if (!p) return { erro: 'sem palavra' };
+  if (!/^[A-Z]+$/.test(p)) return { erro: 'grade com caractere inválido' };
+  if (p.length < 3) return { erro: 'curta demais' };
+  if (p.length > 9) return { erro: `tem ${p.length} letras; o banco vai até 9` };
   const d = (item.definicao || '').trim();
-  if (!d) return 'sem definição';
-  if (d.length > LIMITE_DEF) return `definição com ${d.length} caracteres`;
-  if (semAcento(d.toUpperCase()).includes(p)) return 'a definição entrega a palavra';
-  if (![1, 2, 3].includes(+item.nivel)) return 'nível inválido';
-  if (jaExiste.has(p)) return 'já está no banco';
-  if (noLote.has(p)) return 'repetida no lote';
-  return null;
+  if (!d) return { erro: 'sem definição' };
+  if (d.length > LIMITE_DEF) return { erro: `definição com ${d.length} caracteres` };
+  if (entregaAPalavra(d, p)) return { erro: 'a definição entrega a palavra' };
+  if (![1, 2, 3].includes(+item.nivel)) return { erro: 'nível inválido' };
+  if (jaExiste.has(p)) return { erro: 'já está no banco' };
+  if (noLote.has(p)) return { erro: 'repetida no lote' };
+  if (tamAlvo && p.length !== tamAlvo) return { aviso: `entra como ${p.length} letras` };
+  return {};
 }
 
 // ================= estado =================
@@ -323,8 +334,10 @@ Tipo: ${bib ? 'palavras BÍBLICAS — pessoas, lugares, objetos, livros, tribos,
 ${campo ? 'Recorte pedido: ' + campo + '\n' : ''}Dificuldade pretendida: nível ${nivel} de 3 (1 = todo mundo conhece, 3 = exige estudo).
 
 Regras rígidas:
-- "palavra": MAIÚSCULAS, somente A a Z, sem acento, sem cedilha, sem espaço, exatamente ${tam} letras.
-- "gabarito": a grafia correta, com acento e cedilha (ADAO -> ADÃO). Se não tiver acento, repita a palavra.
+- Use somente palavras REAIS e COMPLETAS. Nunca corte, encurte nem abrevie uma palavra para ela caber no tamanho pedido. CADEIRA tem 7 letras: não escreva CADEIR. RELÓGIO tem 7: não escreva RELOGI. Se não achar palavra de ${tam} letras, entregue menos itens — jamais invente forma truncada.
+- "gabarito": a palavra completa e correta, com acento e cedilha (ADÃO, RELÓGIO).
+- "palavra": o mesmo gabarito em MAIÚSCULAS sem acento e sem cedilha (ADÃO -> ADAO). Os dois têm de ter o mesmo número de letras, e esse número deve ser ${tam}.
+- Antes de incluir cada item, conte as letras da palavra completa. Se não der ${tam}, descarte o item.
 - "definicao": no máximo ${LIMITE_DEF} caracteres, pois ela cabe dentro de uma casa da grade. Não pode conter a própria palavra nem cognato dela.
 - ${bib ? '"referencia": um livro e capítulo que sustente a definição (ex.: "Gn 6.14"). Não invente referência; se não tiver certeza, deixe vazio.'
     : '"referencia": string vazia.'}
@@ -423,19 +436,23 @@ function receberLote(txt, tam, tema) {
   const jaExiste = new Set(BANCO.map(w => w.palavra));
   const noLote = new Set();
   LOTE = itens.map(x => {
+    const gab = (x.gabarito || x.palavra || '').toUpperCase().trim();
     const item = {
-      palavra: (x.palavra || '').toUpperCase().trim(),
-      gabarito: (x.gabarito || x.palavra || '').toUpperCase().trim(),
+      palavra: normalizar(gab),          // a grade sai sempre da palavra completa
+      gabarito: gab,
       definicao: (x.definicao || '').trim(),
       nivel: +x.nivel || 2, tema, referencia: (x.referencia || '').trim(), marcada: false,
     };
-    item.erro = validar(item, tam, jaExiste, noLote);
+    const r = validar(item, tam, jaExiste, noLote);
+    item.erro = r.erro; item.aviso = r.aviso;
     if (!item.erro) { noLote.add(item.palavra); item.marcada = true; }
     return item;
   });
+  const fora = LOTE.filter(i => i.aviso).length;
   pintarLote();
   const bons = LOTE.filter(i => !i.erro).length;
   recado(`Lote recebido: ${bons} de ${LOTE.length} passaram na conferência automática. Leia antes de salvar.` +
+    (fora ? ` ${fora} vieram com outro tamanho e entram na prateleira certa.` : '') +
     (extrairJson.truncado ? ' A resposta veio cortada pelo tamanho, então o lote saiu menor do que o pedido.' : ''), 'ok');
 }
 
@@ -444,9 +461,9 @@ function reconferir() {
   const jaExiste = new Set(BANCO.map(w => w.palavra));
   const noLote = new Set();
   LOTE.forEach(i => {
-    i.erro = validar(i, null, jaExiste, noLote);
-    if (!i.erro) noLote.add(i.palavra);
-    if (i.erro) i.marcada = false;
+    const r = validar(i, null, jaExiste, noLote);
+    i.erro = r.erro; i.aviso = r.aviso;
+    if (!i.erro) noLote.add(i.palavra); else i.marcada = false;
   });
 }
 
@@ -466,7 +483,8 @@ function pintarLote() {
           <span class="conta ${nDef > LIMITE_DEF ? 'estoura' : ''}">${nDef}/${LIMITE_DEF}</span></td>
       <td><select data-k="${k}" data-campo="nivel">${[1, 2, 3].map(n => `<option ${n === +it.nivel ? 'selected' : ''}>${n}</option>`).join('')}</select></td>
       <td><input value="${(it.referencia || '').replace(/"/g, '&quot;')}" data-k="${k}" data-campo="referencia"></td>
-      <td>${it.erro ? `<span class="selo erro">${it.erro}</span>` : '<span class="selo ok">pronta</span>'}</td>`;
+      <td>${it.erro ? `<span class="selo erro">${it.erro}</span>`
+        : (it.aviso ? `<span class="selo aviso">${it.aviso}</span>` : '<span class="selo ok">pronta</span>')}</td>`;
     corpo.appendChild(tr);
   });
 }
@@ -475,7 +493,7 @@ document.getElementById('corpoLote').addEventListener('input', e => {
   const k = e.target.dataset.k, campo = e.target.dataset.campo;
   if (k == null) return;
   LOTE[k][campo] = campo === 'marcada' ? e.target.checked : (campo === 'nivel' ? +e.target.value : e.target.value);
-  if (campo === 'gabarito') LOTE[k].palavra = semAcento(LOTE[k].gabarito.toUpperCase());
+  if (campo === 'gabarito') LOTE[k].palavra = normalizar(LOTE[k].gabarito);
   if (campo !== 'marcada') { reconferir(); pintarLote(); }
 });
 
@@ -568,8 +586,9 @@ document.getElementById('btImp').onclick = async () => {
         palavra: (x.palavra || '').toUpperCase().trim(), gabarito: (x.gabarito || x.palavra || '').toUpperCase().trim(),
         definicao: (x.definicao || '').trim(), nivel: +x.nivel || 2, tema: +x.tema || 0, referencia: x.referencia || '',
       };
-      const erro = validar(it, null, jaExiste, noLote);
-      if (erro) ruins.push(it.palavra + ' (' + erro + ')'); else { noLote.add(it.palavra); bons.push(it); }
+      it.palavra = normalizar(it.gabarito || it.palavra);
+      const r = validar(it, null, jaExiste, noLote);
+      if (r.erro) ruins.push(it.palavra + ' (' + r.erro + ')'); else { noLote.add(it.palavra); bons.push(it); }
     });
     if (bons.length) { await repo.inserir(bons); BANCO = await repo.listar(); pintarMetas(); pintarBanco(); }
     recado(`${bons.length} importada(s).` + (ruins.length ? ` Ficaram de fora ${ruins.length}: ${ruins.slice(0, 6).join(', ')}${ruins.length > 6 ? '…' : ''}` : ''), bons.length ? 'ok' : 'erro');
